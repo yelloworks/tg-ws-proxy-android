@@ -24,6 +24,20 @@ jobs:
           git checkout --detach "${{ inputs.commit }}"
           git log -1 --oneline
  
+      - name: Get my patches from this fork
+        uses: actions/checkout@v4
+        with:
+          path: self
+ 
+      - name: Apply patches
+        working-directory: src
+        run: |
+          shopt -s nullglob
+          for p in ../self/*.patch; do
+            echo "Applying $p"
+            git apply --verbose "$p"
+          done
+ 
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
