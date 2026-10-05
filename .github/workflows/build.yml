@@ -1,0 +1,78 @@
+name: Build APK
+ 
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "Commit SHA to build"
+        required: true
+        default: "7c7f1684312a76f64ed0436c5d5da06a3baa63ce"
+ 
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+ 
+    steps:
+      - name: Get source at commit
+        run: |
+          git init src && cd src
+          git remote add origin https://github.com/amurcanov/tg-ws-proxy-android.git
+          # Commit may live only in a pull request, so fall back to fetching PR refs
+          git fetch --depth 1 origin "${{ inputs.commit }}" \
+            || git fetch origin '+refs/pull/*/head:refs/remotes/pr/*'
+          git checkout --detach "${{ inputs.commit }}"
+          git log -1 --oneline
+ 
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+ 
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.6.0"
+ 
+      - name: Set up Rust
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add aarch64-linux-android armv7-linux-androideabi
+          cargo install cargo-ndk --locked
+ 
+      - name: Build native library (.so)
+        working-directory: src
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: |
+          cargo ndk -t arm64-v8a  --platform 24 -o app/src/main/jniLibs build --release
+          cargo ndk -t armeabi-v7a --platform 21 -o app/src/main/jniLibs build --release
+          ls -la app/src/main/jniLibs/*/
+ 
+      - name: Create signing key and local.properties
+        working-directory: src
+        run: |
+          keytool -genkeypair -v -keystore "$RUNNER_TEMP/release.keystore" \
+            -alias tgws -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android \
+            -dname "CN=tg-ws-proxy self-build"
+          cat > local.properties <<EOF
+          sdk.dir=$ANDROID_HOME
+          KEYSTORE_FILE=$RUNNER_TEMP/release.keystore
+          KEYSTORE_PASSWORD=android
+          KEY_ALIAS=tgws
+          KEY_PASSWORD=android
+          EOF
+ 
+      - name: Build APKs
+        working-directory: src
+        run: gradle assembleRelease --no-daemon --stacktrace
+ 
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: tg-ws-proxy-apk-${{ inputs.commit }}
+          path: src/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
