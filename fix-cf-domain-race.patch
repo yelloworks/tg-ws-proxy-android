@@ -1,0 +1,52 @@
+diff --git a/src/proxy.rs b/src/proxy.rs
+index 23e04d5..e5d8a3c 100644
+--- a/src/proxy.rs
++++ b/src/proxy.rs
+@@ -1291,12 +1291,12 @@ async fn cfproxy_acquire_ws(
+     if ws.is_none() && ordered.len() > 1 {
+         let remaining_domains: Vec<String> = ordered[1..].to_vec();
+         let sem = Arc::new(tokio::sync::Semaphore::new(CFPROXY_FALLBACK_PARALLEL));
+-        let mut handles = Vec::new();
++        let mut set = tokio::task::JoinSet::new();
+         for bd in remaining_domains {
+             let sem = sem.clone();
+             let cancel = cancel_token.clone();
+             let ws_path = ws_path.to_string();
+-            handles.push(tokio::spawn(async move {
++            set.spawn(async move {
+                 tokio::select! {
+                     _ = cancel.cancelled() => None,
+                     r = async {
+@@ -1305,20 +1305,20 @@ async fn cfproxy_acquire_ws(
+                         w.map(|ws| (ws, d))
+                     } => r,
+                 }
+-            }));
+-        }
+-        for h in handles {
+-            if let Ok(Some((w, d))) = h.await {
+-                if ws.is_none() {
+-                    ws = Some(w);
+-                    chosen_domain = d;
+-                } else {
+-                    tokio::spawn(async move {
+-                        w.close().await;
+-                    });
+-                }
++            });
++        }
++        // Берём первый успешный домен и сразу прекращаем перебор остальных.
++        // Раньше здесь ждали завершения ВСЕХ попыток (до ~20 доменов по 2
++        // параллельно), и найденное соединение простаивало, пока клиент
++        // Telegram не отваливался по таймауту.
++        while let Some(res) = set.join_next().await {
++            if let Ok(Some((w, d))) = res {
++                ws = Some(w);
++                chosen_domain = d;
++                break;
+             }
+         }
++        set.abort_all();
+     }
+ 
+     match ws {
